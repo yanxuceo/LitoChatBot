@@ -1,24 +1,28 @@
 import os
-
-assistant_id = os.getenv('OPENAI_ASSISTANT_ID')
-thread_id = os.getenv('OPENAI_THREAD_ID')
-
-
-import os
 import asyncio
 import re
 import tempfile
 import queue
 import threading
+
+import openai
+
+import edge_tts
 import pyaudio
+import simpleaudio as sa
+from pydub import AudioSegment
+
+# Google Speech-to-text dependencies
 from google.cloud import speech
 from google.oauth2 import service_account
-import openai
-import edge_tts
 
 # Google Cloud Speech setup
 credentials = service_account.Credentials.from_service_account_file('google_speech_config.json')
 client_speech = speech.SpeechClient(credentials=credentials)
+
+# OpenAI Assistants ID & thread ID
+assistant_id = os.getenv('OPENAI_ASSISTANT_ID')
+thread_id = os.getenv('OPENAI_THREAD_ID')
 
 # Audio parameters
 RATE = 44100
@@ -31,6 +35,9 @@ client_openai = openai.OpenAI(api_key=openai_api_key)
 # Global TTS task and interaction task references
 tts_task = None
 interaction_task = None
+playback_thread = None
+stop_playback_event = threading.Event()
+playback_lock = threading.Lock()  # Lock for managing playback concurrency
 
 class MicrophoneStream:
     def __init__(self, rate, chunk):
@@ -71,8 +78,10 @@ class MicrophoneStream:
                 return
             yield chunk
 
+
 def contains_chinese(text):
     return any('\u4e00' <= char <= '\u9fff' for char in text)
+
 
 def remove_emojis(text):
     emoji_pattern = re.compile(
@@ -87,9 +96,28 @@ def remove_emojis(text):
         "]+", flags=re.UNICODE)
     return emoji_pattern.sub(r'', text)
 
+
+def play_audio(audio_data):
+    global stop_playback_event, playback_lock
+
+    with playback_lock:
+        stop_playback_event.clear()
+        play_obj = sa.play_buffer(
+            audio_data.raw_data,
+            num_channels=audio_data.channels,
+            bytes_per_sample=audio_data.sample_width,
+            sample_rate=audio_data.frame_rate
+        )
+
+        while play_obj.is_playing() and not stop_playback_event.is_set():
+            pass
+
+        play_obj.stop()
+
+
 async def text_to_speech(text):
     """Convert text to speech and play the audio."""
-    global tts_task
+    global tts_task, playback_thread, stop_playback_event
 
     if not isinstance(text, str):
         text = str(text)  # Ensure text is converted to a string
@@ -102,7 +130,14 @@ async def text_to_speech(text):
         except asyncio.CancelledError:
             print("Previous TTS task cancelled")
 
+    # Stop the current playback if it exists
+    if playback_thread and playback_thread.is_alive():
+        stop_playback_event.set()
+        playback_thread.join()
+
     async def tts_task_fn(text_segment):
+        global playback_thread, stop_playback_event
+
         # Choose the voice based on the text content
         if contains_chinese(text_segment):
             voice = "zh-CN-XiaoyiNeural"
@@ -117,13 +152,28 @@ async def text_to_speech(text):
                     if chunk["type"] == "audio":
                         with open(output_file, "ab") as file:
                             file.write(chunk["data"])
-                os.system(f"mpg123 -q {output_file}")
+
+                # Use pydub to load the complete audio file
+                audio = AudioSegment.from_file(output_file)
+                
+                # Reset the stop playback event
+                stop_playback_event.clear()
+
+                # Run the play_audio function in a separate thread
+                playback_thread = threading.Thread(target=play_audio, args=(audio,))
+                playback_thread.start()
+                playback_thread.join()
+
             except edge_tts.exceptions.NoAudioReceived as e:
                 print(f"No audio received: {e}")
+            finally:
+                # Cleanup: remove the temporary file
+                os.remove(output_file)
 
     # Create a new TTS task
     tts_task = asyncio.create_task(tts_task_fn(text))
     await tts_task
+
 
 class CustomEventHandler(openai.AssistantEventHandler):
     def __init__(self, loop):
@@ -156,7 +206,6 @@ class CustomEventHandler(openai.AssistantEventHandler):
             self.responses.put(text)
             self.response_text += text
             self.accumulated_text += text
-            # 直接将完整的响应文本放入 TTS 队列
             asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
             self.accumulated_text = ""
 
@@ -174,7 +223,7 @@ class CustomEventHandler(openai.AssistantEventHandler):
                     self.response_text += text
                     self.accumulated_text += text
                     print(text, end="", flush=True)
-                    # 在句子结束标点时，将累积的文本放入队列
+                    # when text chunks ends with specified punctuation, mark it as a "complete" sentence to audio playback
                     if self.sentence_end_pattern.search(text):
                         asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
                         self.accumulated_text = ""
@@ -194,8 +243,9 @@ class CustomEventHandler(openai.AssistantEventHandler):
                     if output.type == "logs":
                         print(f"\n{output.logs}", flush=True)
 
+
 async def handle_speech():
-    global interaction_task, tts_task
+    global interaction_task, tts_task, stop_playback_event, playback_thread
 
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -212,6 +262,11 @@ async def handle_speech():
         async for response in async_responses(responses):
             for result in response.results:
                 if result.is_final:
+                    # Stop any ongoing audio playback immediately
+                    stop_playback_event.set()
+                    if playback_thread and playback_thread.is_alive():
+                        playback_thread.join()
+
                     if interaction_task:
                         interaction_task.cancel()
                         try:
@@ -224,13 +279,16 @@ async def handle_speech():
                             await tts_task
                         except asyncio.CancelledError:
                             print("Previous TTS task cancelled")
+
                     input_text = result.alternatives[0].transcript
                     print(f"Recognized: {input_text}")
                     interaction_task = asyncio.create_task(handle_interaction(input_text))
 
+
 async def handle_interaction(input_text):
     response_text = await ask_chatbot(input_text)
     print(f"Bot response: {response_text}")
+
 
 async def async_responses(responses):
     loop = asyncio.get_event_loop()
@@ -240,6 +298,7 @@ async def async_responses(responses):
             yield response
         except StopIteration:
             break
+
 
 def ask_chatbot_sync(input_text, loop):
     global assistant_id, thread_id
@@ -251,23 +310,25 @@ def ask_chatbot_sync(input_text, loop):
     )
 
     event_handler = CustomEventHandler(loop)
-    # 启动 TTS 队列处理任务
+    # start TTS queue task
     asyncio.run_coroutine_threadsafe(event_handler.process_tts_queue(), loop)
 
     with client_openai.beta.threads.runs.stream(
         thread_id=thread_id,
         assistant_id=assistant_id,
-        instructions="你扮演一个孩子的小伙伴，名字叫小小新，性格和善，说话活泼可爱，对孩子充满爱心，经常赞赏和鼓励孩子，用5岁孩子容易理解语言提供有趣和创新的回答，回答不要超过50字。",
+        instructions="用户名字叫小旭",
         event_handler=event_handler
     ) as stream:
         stream.until_done()
 
     return event_handler.response_text
 
+
 async def ask_chatbot(input_text):
     loop = asyncio.get_event_loop()
     response_text = await loop.run_in_executor(None, ask_chatbot_sync, input_text, loop)
     return response_text
+
 
 async def main():
     global interaction_task
@@ -283,6 +344,7 @@ async def main():
 
         interaction_task = asyncio.create_task(handle_speech())
         await interaction_task
+
 
 if __name__ == "__main__":
     asyncio.run(main())
