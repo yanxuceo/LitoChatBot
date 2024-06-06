@@ -122,6 +122,14 @@ async def text_to_speech(text):
     if not isinstance(text, str):
         text = str(text)  # Ensure text is converted to a string
 
+    # Cancel the previous TTS task if it exists
+    if tts_task:
+        tts_task.cancel()
+        try:
+            await tts_task
+        except asyncio.CancelledError:
+            print("Previous TTS task cancelled")
+
     # Stop the current playback if it exists
     if playback_thread and playback_thread.is_alive():
         stop_playback_event.set()
@@ -237,7 +245,7 @@ class CustomEventHandler(openai.AssistantEventHandler):
 
 
 async def handle_speech():
-    global interaction_task, tts_task, stop_playback_event, playback_thread
+    global stop_playback_event, playback_thread
 
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -259,22 +267,9 @@ async def handle_speech():
                     if playback_thread and playback_thread.is_alive():
                         playback_thread.join()
 
-                    if interaction_task:
-                        interaction_task.cancel()
-                        try:
-                            await interaction_task
-                        except asyncio.CancelledError:
-                            print("Previous interaction task cancelled")
-                    if tts_task:
-                        tts_task.cancel()
-                        try:
-                            await tts_task
-                        except asyncio.CancelledError:
-                            print("Previous TTS task cancelled")
-
                     input_text = result.alternatives[0].transcript
                     print(f"Recognized: {input_text}")
-                    interaction_task = asyncio.create_task(handle_interaction(input_text))
+                    await handle_interaction(input_text)
 
 
 async def handle_interaction(input_text):
@@ -326,17 +321,8 @@ async def main():
     global interaction_task
     loop = asyncio.get_event_loop()
 
-    while True:
-        if interaction_task:
-            interaction_task.cancel()
-            try:
-                await interaction_task
-            except asyncio.CancelledError:
-                print("Previous interaction task cancelled")
-
-        interaction_task = asyncio.create_task(handle_speech())
-        await interaction_task
-
+    interaction_task = asyncio.create_task(handle_speech())
+    await interaction_task
 
 if __name__ == "__main__":
     asyncio.run(main())
