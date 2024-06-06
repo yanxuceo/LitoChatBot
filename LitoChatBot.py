@@ -172,6 +172,7 @@ class CustomEventHandler(openai.AssistantEventHandler):
         self.tts_queue = asyncio.Queue()
         self.tts_task = None
         self.sentence_end_pattern = re.compile(r'[。！？.!?]')
+        self.sentence_counter = 0  # Counter to keep track of sentences
 
     async def process_tts_queue(self):
         while True:
@@ -192,8 +193,12 @@ class CustomEventHandler(openai.AssistantEventHandler):
             self.responses.put(text)
             self.response_text += text
             self.accumulated_text += text
-            asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
-            self.accumulated_text = ""
+            self.sentence_counter += 1
+            # Accumulate every two sentences
+            if self.sentence_counter == 2:
+                asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
+                self.accumulated_text = ""
+                self.sentence_counter = 0
 
     def on_text_delta(self, delta, snapshot):
         print(f"DEBUG: Received delta: {delta}")
@@ -209,10 +214,14 @@ class CustomEventHandler(openai.AssistantEventHandler):
                     self.response_text += text
                     self.accumulated_text += text
                     print(text, end="", flush=True)
-                    # when text chunks ends with specified punctuation, mark it as a "complete" sentence to audio playback
+                    # When text chunks end with specified punctuation, mark it as a "complete" sentence
                     if self.sentence_end_pattern.search(text):
-                        asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
-                        self.accumulated_text = ""
+                        self.sentence_counter += 1
+                        # Accumulate every two sentences
+                        if self.sentence_counter == 2:
+                            asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
+                            self.accumulated_text = ""
+                            self.sentence_counter = 0
 
     def on_tool_call_created(self, tool_call):
         print(f"\nassistant(t_c_c) > {tool_call.type}\n", flush=True)
@@ -228,6 +237,7 @@ class CustomEventHandler(openai.AssistantEventHandler):
                 for output in delta.code_interpreter.outputs:
                     if output.type == "logs":
                         print(f"\n{output.logs}", flush=True)
+
 
 
 async def handle_speech():
