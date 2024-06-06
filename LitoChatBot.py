@@ -122,14 +122,6 @@ async def text_to_speech(text):
     if not isinstance(text, str):
         text = str(text)  # Ensure text is converted to a string
 
-    # Cancel the previous TTS task if it exists
-    if tts_task:
-        tts_task.cancel()
-        try:
-            await tts_task
-        except asyncio.CancelledError:
-            print("Previous TTS task cancelled")
-
     # Stop the current playback if it exists
     if playback_thread and playback_thread.is_alive():
         stop_playback_event.set()
