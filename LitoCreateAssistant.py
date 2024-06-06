@@ -11,8 +11,8 @@ client = OpenAI(api_key=openai_api_key)
 
 # Create assistant
 assistant = client.beta.assistants.create(
-    name="小小新",
-    instructions="你扮演一个孩子的小伙伴，名字叫小小新，性格温和，说话可爱，对孩子充满爱心，经常赞赏和鼓励孩子，用5岁孩子容易理解语言提供有趣和创新的回答，回答不要超过50字。",
+    name="Lito",
+    instructions="You play a helpful, supportive personal assistant, and always give inspiring and precise response.",
     model="gpt-3.5-turbo-0125",
 )
 
