@@ -83,20 +83,6 @@ def contains_chinese(text):
     return any('\u4e00' <= char <= '\u9fff' for char in text)
 
 
-def remove_emojis(text):
-    emoji_pattern = re.compile(
-        "["
-        u"\U0001F600-\U0001F64F"  # emoticons
-        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-        u"\U0001F680-\U0001F6FF"  # transport & map symbols
-        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
-        u"\U00002702-\U000027B0"  # other symbols
-        u"\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
-        u"\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
-        "]+", flags=re.UNICODE)
-    return emoji_pattern.sub(r'', text)
-
-
 def play_audio(audio_data):
     global stop_playback_event, playback_lock
 
@@ -142,7 +128,7 @@ async def text_to_speech(text):
         if contains_chinese(text_segment):
             voice = "zh-CN-XiaoyiNeural"
         else:
-            voice = "en-GB-SoniaNeural"
+            voice = "en-US-BrianNeural" #en-GB-SoniaNeural
 
         communicate = edge_tts.Communicate(text_segment, voice)
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_audio_file:
@@ -250,7 +236,7 @@ async def handle_speech():
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=RATE,
-        language_code='cmn-Hans-CN'
+        language_code='en-US' #cmn-Hans-CN
     )
     streaming_config = speech.StreamingRecognitionConfig(config=config, interim_results=True)
 
