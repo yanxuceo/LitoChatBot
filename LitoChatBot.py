@@ -174,8 +174,6 @@ class CustomEventHandler(openai.AssistantEventHandler):
         self.tts_task = None
         self.sentence_end_pattern = re.compile(r'[。！？.!?]')
         self.sentence_counter = 0       # Counter to keep track of sentences
-        self.timeout_duration = 1.5     # Duration for the timer in seconds
-        self.timer = None
 
     async def process_tts_queue(self):
         while True:
@@ -190,19 +188,6 @@ class CustomEventHandler(openai.AssistantEventHandler):
             await self.tts_task
             self.tts_queue.task_done()
 
-    def reset_timer(self):
-        if self.timer:
-            self.timer.cancel()
-        self.timer = threading.Timer(self.timeout_duration, self.on_timeout)
-        self.timer.start()
-
-    def on_timeout(self):
-        print("DEBUG: time out---------------")
-        print(f"DEBUG: Received delta: {self.accumulated_text}")
-        asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
-        self.accumulated_ttextext = ""
-        self.sentence_counter = 0
-
     def on_text_created(self, text) -> None:
         print(f"\nassistant(t_c) > ", end="", flush=True)
         if isinstance(text, str):
@@ -215,7 +200,6 @@ class CustomEventHandler(openai.AssistantEventHandler):
                 asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
                 self.accumulated_text = ""
                 self.sentence_counter = 0
-        #self.reset_timer()
 
     def on_text_delta(self, delta, snapshot):
         print(f"DEBUG: Received delta: {delta}")
@@ -223,27 +207,20 @@ class CustomEventHandler(openai.AssistantEventHandler):
         if text:
             print(f"DEBUG: Delta text type: {type(text)}")
             if not self.initial_text_processed and isinstance(text, str):
-                self.text = text
                 self.response_text += text
                 self.accumulated_text += text
                 self.initial_text_processed = True
             else:
                 if isinstance(text, str):
-                    self.text = text
                     self.response_text += text
                     self.accumulated_text += text
                     print(text, end="", flush=True)
                     # When text chunks end with specified punctuation, mark it as a "complete" sentence
                     if self.sentence_end_pattern.search(text):
-                        self.sentence_counter += 1
-                        # Accumulate every two sentences
-                        if self.sentence_counter == 2:
-                            asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
-                            self.accumulated_text = ""
-                            self.sentence_counter = 0
-                        if self.sentence_counter == 3:
-                            print(f"DEBUG: remaining text: {self.accumulated_text}")
-                        #self.reset_timer()
+                        asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
+                        self.accumulated_text = ""
+                        self.sentence_counter = 0
+    
 
     def on_tool_call_created(self, tool_call):
         print(f"\nassistant(t_c_c) > {tool_call.type}\n", flush=True)
@@ -286,8 +263,9 @@ async def handle_speech():
                         playback_thread.join()
 
                     input_text = result.alternatives[0].transcript
-                    print(f"Recognized: {input_text}")
-                    await handle_interaction(input_text)
+                    if input_text != "":
+                        print(f"Recognized: {input_text}")
+                        await handle_interaction(input_text)
 
 
 async def handle_interaction(input_text):
