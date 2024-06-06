@@ -165,6 +165,7 @@ class CustomEventHandler(openai.AssistantEventHandler):
     def __init__(self, loop):
         super().__init__()
         self.loop = loop
+        self.text = ""
         self.response_text = ""
         self.accumulated_text = ""
         self.initial_text_processed = False
@@ -172,7 +173,9 @@ class CustomEventHandler(openai.AssistantEventHandler):
         self.tts_queue = asyncio.Queue()
         self.tts_task = None
         self.sentence_end_pattern = re.compile(r'[。！？.!?]')
-        self.sentence_counter = 0  # Counter to keep track of sentences
+        self.sentence_counter = 0       # Counter to keep track of sentences
+        self.timeout_duration = 1.5     # Duration for the timer in seconds
+        self.timer = None
 
     async def process_tts_queue(self):
         while True:
@@ -187,6 +190,19 @@ class CustomEventHandler(openai.AssistantEventHandler):
             await self.tts_task
             self.tts_queue.task_done()
 
+    def reset_timer(self):
+        if self.timer:
+            self.timer.cancel()
+        self.timer = threading.Timer(self.timeout_duration, self.on_timeout)
+        self.timer.start()
+
+    def on_timeout(self):
+        print("DEBUG: time out---------------")
+        print(f"DEBUG: Received delta: {self.accumulated_text}")
+        asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
+        self.accumulated_ttextext = ""
+        self.sentence_counter = 0
+
     def on_text_created(self, text) -> None:
         print(f"\nassistant(t_c) > ", end="", flush=True)
         if isinstance(text, str):
@@ -199,6 +215,7 @@ class CustomEventHandler(openai.AssistantEventHandler):
                 asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
                 self.accumulated_text = ""
                 self.sentence_counter = 0
+        #self.reset_timer()
 
     def on_text_delta(self, delta, snapshot):
         print(f"DEBUG: Received delta: {delta}")
@@ -206,11 +223,13 @@ class CustomEventHandler(openai.AssistantEventHandler):
         if text:
             print(f"DEBUG: Delta text type: {type(text)}")
             if not self.initial_text_processed and isinstance(text, str):
+                self.text = text
                 self.response_text += text
                 self.accumulated_text += text
                 self.initial_text_processed = True
             else:
                 if isinstance(text, str):
+                    self.text = text
                     self.response_text += text
                     self.accumulated_text += text
                     print(text, end="", flush=True)
@@ -222,6 +241,9 @@ class CustomEventHandler(openai.AssistantEventHandler):
                             asyncio.run_coroutine_threadsafe(self.tts_queue.put(self.accumulated_text), self.loop)
                             self.accumulated_text = ""
                             self.sentence_counter = 0
+                        if self.sentence_counter == 3:
+                            print(f"DEBUG: remaining text: {self.accumulated_text}")
+                        #self.reset_timer()
 
     def on_tool_call_created(self, tool_call):
         print(f"\nassistant(t_c_c) > {tool_call.type}\n", flush=True)
@@ -299,7 +321,7 @@ def ask_chatbot_sync(input_text, loop):
     with client_openai.beta.threads.runs.stream(
         thread_id=thread_id,
         assistant_id=assistant_id,
-        instructions="用户名字叫小旭",
+        instructions="please answer in less than 50 words.",
         event_handler=event_handler
     ) as stream:
         stream.until_done()
